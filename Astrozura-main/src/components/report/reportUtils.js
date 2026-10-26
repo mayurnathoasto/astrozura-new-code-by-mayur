@@ -1,0 +1,32 @@
+import React from "react";
+
+export const formatReportLabel = (value = "") =>
+  String(value)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+export const displayCell = (value) => {
+  if (React.isValidElement(value)) return value;
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (/^[{[]/.test(trimmed)) {
+      try {
+        return displayCell(JSON.parse(trimmed));
+      } catch {
+        return value.replace(/_/g, " ");
+      }
+    }
+    return value.replace(/_/g, " ");
+  }
+  if (typeof value === "object") {
+    if (value.name) return value.name;
+    if (value.full_name) return value.full_name;
+    return Object.entries(value)
+      .filter(([, item]) => item !== null && item !== undefined && item !== "")
+      .map(([key, item]) => `${formatReportLabel(key)}: ${displayCell(item)}`)
+      .join(" | ") || "-";
+  }
+  return String(value);
+};

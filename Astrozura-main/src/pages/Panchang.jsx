@@ -1,0 +1,1044 @@
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import Navbar from "../components/Navbar";
+import Footer from "../components/Footer";
+import { getPanchang, getPanchangExtras, searchLocation } from "../api/prokeralaApi";
+import { useAuth } from "../context/AuthContext";
+
+const VIEW_CONFIG = {
+  chaughadiya: {
+    label: "Chaughadiya Muhurata",
+    title: "Chaughadiya Muhurta",
+    intro:
+      "The following Chaughadiya periods are shown for the selected date and place. These windows are commonly used to judge auspicious, inauspicious and neutral activity timings.",
+  },
+  hora: {
+    label: "Hora Muhurata",
+    title: "Hora Muhurta",
+    intro:
+      "The following Hora Muhurta are shown for the selected date and place. Hora periods are calculated from sunrise and sunset to guide planetary hour selection.",
+  },
+  daily: {
+    label: "Daily Panchang",
+    title: "Panchang",
+    intro:
+      "Daily Panchang combines tithi, nakshatra, yoga, karana, sunrise, sunset and important timing windows for the selected date and place.",
+  },
+};
+
+const LANGUAGE_OPTIONS = [
+  { value: "en", label: "English" },
+  { value: "hi", label: "Hindi" },
+  { value: "ta", label: "Tamil" },
+  { value: "te", label: "Telugu" },
+  { value: "ml", label: "Malayalam" },
+];
+
+const getTodayInIndia = () =>
+  new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Kolkata" }).format(new Date());
+
+const formatDate = (date, options = { dateStyle: "long" }) => {
+  if (!date) return "-";
+  try {
+    return new Date(date).toLocaleString("en-IN", options);
+  } catch {
+    return String(date);
+  }
+};
+
+const formatInputDateLabel = (date) =>
+  formatDate(`${date}T00:00:00+05:30`, { day: "2-digit", month: "long", year: "numeric" });
+
+const formatPageDate = (date) =>
+  formatDate(`${date}T00:00:00+05:30`, {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  });
+
+const formatTime = (value) => {
+  if (!value) return "-";
+  if (typeof value === "string" && /^\d{1,2}:\d{2}/.test(value.trim())) return value.trim();
+  return formatDate(value, { hour: "2-digit", minute: "2-digit", hour12: false });
+};
+
+const displayValue = (value) => {
+  if (value === null || value === undefined || value === "") return "-";
+  if (Array.isArray(value)) {
+    if (!value.length) return "-";
+    return value.map((item) => displayValue(item)).join(", ");
+  }
+  if (typeof value === "object") {
+    const directValue = value.name || value.full_name || value.title || value.value;
+    if (directValue) return displayValue(directValue);
+    return Object.entries(value)
+      .filter(([, item]) => item !== null && item !== undefined && item !== "")
+      .map(([key, item]) => `${cleanLabel(key)}: ${displayValue(item)}`)
+      .join(" | ") || "-";
+  }
+  return String(value);
+};
+
+const valueFrom = (...values) => {
+  for (const value of values) {
+    if (value !== null && value !== undefined && value !== "") return displayValue(value);
+  }
+  return "-";
+};
+
+const elementWithDetails = (name, end, details, fields) => {
+  const detailMap = details && typeof details === "object" ? details : {};
+  const meta = fields
+    .filter(([key]) => key !== "summary" && key !== "meaning")
+    .map(([key, label]) => ({ label, value: detailMap[key] }))
+    .filter((item) => item.value !== null && item.value !== undefined && item.value !== "");
+  const summary = detailMap.summary || detailMap.meaning || "";
+
+  return {
+    name: name || "-",
+    end: end ? formatTime(end) : "",
+    meta,
+    summary: summary ? displayValue(summary) : "",
+  };
+};
+
+const festivalTextFromPayload = (...payloads) => {
+  for (const payload of payloads) {
+    if (!payload) continue;
+    const source = payload.festivals || payload.festival || payload.vrat || payload;
+    if (Array.isArray(source) && source.length > 0) {
+      return source.map((item) => displayValue(item)).filter(Boolean).join(", ");
+    }
+    if (typeof source === "string" && source.trim()) return source;
+    if (source && typeof source === "object") {
+      const rendered = displayValue(source);
+      if (rendered && rendered !== "-") return rendered;
+    }
+  }
+  return "No festival returned";
+};
+
+const timeRange = (period) => {
+  if (!period || typeof period !== "object") return null;
+  if (!period.start || !period.end) return null;
+  return `${formatTime(period.start)} - ${formatTime(period.end)}`;
+};
+
+const splitMuhurtaRows = (payload, keyCandidates) => {
+  const source = payload || {};
+  const normalise = (items = []) =>
+    (Array.isArray(items) ? items : []).map((item, index) => ({
+      id: `${item.muhurta || item.hora || item.planet || item.name || "period"}-${index}`,
+      name: valueFrom(...keyCandidates.map((key) => item[key]), item.muhurta, item.hora, item.planet, item.name),
+      time: valueFrom(item.time, item.period, item.duration),
+    }));
+
+  if (source.day || source.night) {
+    return {
+      day: normalise(source.day),
+      night: normalise(source.night),
+    };
+  }
+
+  if (source.chaughadiya) {
+    return splitMuhurtaRows(source.chaughadiya, keyCandidates);
+  }
+
+  if (source.hora) {
+    return splitMuhurtaRows(source.hora, keyCandidates);
+  }
+
+  if (Array.isArray(source)) {
+    const midpoint = Math.ceil(source.length / 2);
+    return {
+      day: normalise(source.slice(0, midpoint)),
+      night: normalise(source.slice(midpoint)),
+    };
+  }
+
+  return { day: [], night: [] };
+};
+
+const chaughadiyaClass = (name) => {
+  const normalised = String(name || "").toLowerCase();
+  if (["amrit", "shubh", "labh"].some((item) => normalised.includes(item))) {
+    return "bg-emerald-50/70 border-l-4 border-l-emerald-500 text-emerald-900";
+  }
+  if (normalised.includes("char")) return "bg-sky-50/70 border-l-4 border-l-sky-400 text-sky-900";
+  return "bg-rose-50/70 border-l-4 border-l-rose-400 text-rose-900";
+};
+
+function FieldShell({ label, hint, children }) {
+  return (
+    <div className="min-w-0">
+      <label className="mb-1.5 block text-xs font-black uppercase tracking-wide text-slate-700 md:mb-2 md:text-sm md:normal-case md:tracking-normal">{label}</label>
+      {children}
+      {hint ? <p className="mt-1 text-[11px] font-medium text-slate-500">{hint}</p> : null}
+    </div>
+  );
+}
+
+function MuhurtaTable({ title, rows, rowClass = () => "bg-slate-50/50 border-l-4 border-l-[#D7AF4B] text-slate-700" }) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-sm transition hover:shadow-md">
+      <h3 className="bg-[#D7AF4B] px-5 py-4 text-center text-lg font-bold text-[#1E3557] border-b border-[#c79d37]">{title}</h3>
+      <div className="divide-y divide-slate-200">
+        {rows.length > 0 ? (
+          rows.map((row) => (
+            <div
+              key={row.id}
+              className={`grid grid-cols-[1fr_1.2fr] items-center border-x border-transparent px-5 py-3.5 text-center text-sm transition hover:border-[#D7AF4B]/40 hover:bg-[#fff9e8] active:bg-[#fff4d4] md:text-base ${rowClass(row.name)}`}
+            >
+              <strong className="font-bold">{row.name}</strong>
+              <span className="font-mono text-xs md:text-sm font-semibold">{row.time}</span>
+            </div>
+          ))
+        ) : (
+          <div className="px-5 py-8 text-center text-sm font-medium text-slate-500">
+            No muhurta timings available for this date.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function InfoTable({ title, rows, columnsClass = "grid-cols-2" }) {
+  const hasAnyValue = rows.some(([, value]) => value && value !== "-" && value !== "No festival returned");
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-sm transition hover:shadow-md">
+      {title ? (
+        <h2 className="bg-[#D7AF4B] border-b border-[#c79d37] px-5 py-4 text-center text-lg font-bold text-[#1E3557]">
+          {title}
+        </h2>
+      ) : null}
+      {!hasAnyValue ? (
+        <div className="bg-[#fffdf7] px-5 py-6 text-center text-sm font-medium text-slate-500">
+          No {title ? title.toLowerCase() : "timing"} data returned for this period.
+        </div>
+      ) : (
+        <div className={`grid ${columnsClass} divide-x divide-y divide-slate-200`}>
+          {rows.map(([label, value]) => (
+            <div key={label} className="border-slate-200 bg-[#fffdf7] p-4 transition hover:bg-[#fff7df] active:bg-[#fff2c9]">
+              <p className="text-xs font-black uppercase tracking-wider text-slate-700">{label}</p>
+              <p className="mt-1 text-sm font-semibold text-[#1E3557]">{value || "-"}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const cleanLabel = (label) =>
+  String(label || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+const tableValue = (value) => {
+  if (value === null || value === undefined || value === "") return "-";
+  if (Array.isArray(value)) return value.map((item) => tableValue(item)).filter(Boolean).join(", ") || "-";
+  if (typeof value === "object") {
+    const preferred = value.name || value.full_name || value.title || value.value || value.sign || value.degree;
+    if (preferred) return String(preferred);
+    return Object.entries(value)
+      .filter(([, nestedValue]) => nestedValue !== null && nestedValue !== undefined && nestedValue !== "")
+      .map(([key, nestedValue]) => `${cleanLabel(key)}: ${tableValue(nestedValue)}`)
+      .join(" | ") || "-";
+  }
+  return String(value);
+};
+
+const firstFilled = (...values) =>
+  values.find((value) => {
+    if (value === null || value === undefined || value === "") return false;
+    if (Array.isArray(value) && value.length === 0) return false;
+    return true;
+  });
+
+const firstArrayFrom = (payload, keys = []) => {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+
+  const nestedArray = Object.values(payload).find(
+    (value) => Array.isArray(value) && value.some((item) => item && typeof item === "object")
+  );
+
+  return nestedArray || [];
+};
+
+const motionFromPlanet = (item = {}) => {
+  const raw = item.isRetro ?? item.is_retro ?? item.retrograde ?? item.isRetrograde;
+  const normalised = String(raw).toLowerCase();
+  if (raw === true || raw === 1 || normalised === "true" || normalised === "1" || normalised === "yes") return "Retrograde";
+  if (raw === false || raw === 0 || normalised === "false" || normalised === "0" || normalised === "no") return "Direct";
+  if (item.motion) return item.motion;
+  if (Number(item.speed) < 0) return "Retrograde";
+  if (Number(item.speed) >= 0) return "Direct";
+  return "-";
+};
+
+const normalizePlanetRows = (payload) =>
+  firstArrayFrom(payload, ["planets", "planet_details", "planetary_positions", "planet_panchang", "data"]).map((item, index) => ({
+    id: `${item.name || item.planet || item.full_name || "planet"}-${index}`,
+    planet: tableValue(item.name || item.planet || item.full_name),
+    sign: tableValue(item.sign || item.zodiac || item.rashi),
+    degree: tableValue(firstFilled(item.degree, item.normDegree, item.norm_degree, item.fullDegree, item.full_degree, item.local_degree, item.longitude)),
+    nakshatra: tableValue(item.nakshatra || item.nakshatra_name || item.nak_name),
+    house: tableValue(item.house || item.house_id),
+    motion: tableValue(motionFromPlanet(item)),
+  }));
+
+const normalizePanchangChartRows = (payload) => {
+  const source = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.chart)
+      ? payload.chart
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload?.panchang_chart)
+          ? payload.panchang_chart
+          : [];
+
+  return source.map((item, index) => ({
+    id: `${item.sign || item.sign_name || "sign"}-${index}`,
+    sign: tableValue(item.sign ?? index + 1),
+    signName: tableValue(item.sign_name || item.rashi || item.zodiac || item.name),
+    planet: tableValue(item.planet),
+    planetSmall: tableValue(item.planet_small),
+    degree: tableValue(firstFilled(item.planet_degree, item.degree)),
+  }));
+};
+
+const normalizePanchangLagnaRows = (payload) =>
+  firstArrayFrom(payload, ["lagna_table", "panchang_lagna_table", "data"]).map((item, index) => ({
+    id: `${item.lagna || "lagna"}-${index}`,
+    lagna: tableValue(item.lagna || item.sign || item.rashi),
+    startTime: tableValue(item.start_time || item.startTime || item.start),
+    endTime: tableValue(item.end_time || item.endTime || item.end),
+  }));
+
+function PanchangDataTable({ title, rows, columns }) {
+  const visibleColumns = columns.filter(
+    (column) => !column.hideWhenEmpty || rows.some((row) => row[column.key] && row[column.key] !== "-")
+  );
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-slate-300 bg-white shadow-sm transition hover:shadow-md">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#c79d37] bg-[#D7AF4B] px-4 py-3 sm:px-5 sm:py-4 text-[#1E3557]">
+        <h3 className="text-sm font-bold sm:text-base">{title}</h3>
+        <span className="inline-flex items-center gap-1 rounded-full bg-white/70 px-2.5 py-0.5 text-[11px] font-semibold text-[#1E3557] shadow-sm sm:hidden">
+          ← Swipe table →
+        </span>
+      </div>
+      <div className="overflow-x-auto max-w-full [scrollbar-width:thin]">
+        <table className="min-w-full border-collapse text-left text-sm">
+          <thead className="bg-[#1E3557] text-white">
+            <tr>
+              {visibleColumns.map((column) => (
+                <th key={column.key} className="border border-[#2d466d] px-4 py-3 text-xs font-semibold uppercase tracking-wider whitespace-nowrap">
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length > 0 ? (
+              rows.map((row, index) => (
+                <tr key={row.id || index} className="transition odd:bg-white even:bg-[#fffaf0] hover:bg-[#fff3cf] active:bg-[#ffe9a8]">
+                  {visibleColumns.map((column) => (
+                    <td key={column.key} className="border border-slate-200 px-4 py-3.5 font-medium text-slate-700 whitespace-nowrap">
+                      {row[column.key] || "-"}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={visibleColumns.length} className="px-4 py-8 text-center text-sm font-medium text-slate-500">
+                  No records available for this calculation.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function PanchangChartBlock({ chartData }) {
+  const chartSvg = chartData?.svg || chartData?.chart_svg || (typeof chartData?.chart === "string" ? chartData.chart : null);
+  const chartRows = normalizePanchangChartRows(chartData);
+
+  if (chartSvg && String(chartSvg).includes("<svg")) {
+    return (
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
+        <h2 className="bg-[#D7AF4B] px-5 py-4 text-lg font-bold text-[#1E3557]">Panchang Chart</h2>
+        <div className="mx-auto max-w-xl p-5 [&_svg]:h-auto [&_svg]:w-full" dangerouslySetInnerHTML={{ __html: chartSvg }} />
+      </section>
+    );
+  }
+
+  return (
+    <PanchangDataTable
+      title="Panchang Chart"
+      rows={chartRows}
+      columns={[
+        { key: "sign", label: "Sign" },
+        { key: "signName", label: "Sign Name" },
+        { key: "planet", label: "Planet" },
+        { key: "planetSmall", label: "Planet Short" },
+        { key: "degree", label: "Degree", hideWhenEmpty: true },
+      ]}
+    />
+  );
+}
+
+function PanchangElementsTable({ rows }) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-sm transition hover:shadow-md">
+      <h2 className="bg-[#D7AF4B] border-b border-[#c79d37] px-5 py-4 text-center text-lg font-bold text-[#1E3557]">Panchang Elements</h2>
+      <div className="divide-y divide-slate-200">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid gap-0 bg-white transition hover:bg-[#fff9e8] active:bg-[#fff3cf] md:grid-cols-[150px_1fr]">
+            <div className="border-b border-slate-200 bg-[#f8fafc] p-4 md:border-b-0 md:border-r md:border-slate-200">
+              <p className="text-xs font-black uppercase tracking-wider text-slate-700">{label}</p>
+            </div>
+            <div className="space-y-3 border-slate-200 bg-[#fffdf8] p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-base font-black text-[#1E3557]">{value.name || "-"}</p>
+                {value.end ? (
+                  <span className="rounded-full bg-[#fff8df] px-3 py-1 text-xs font-bold text-[#8a650d]">Upto {value.end}</span>
+                ) : null}
+              </div>
+              {value.meta?.length ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {value.meta.map((item) => (
+                    <div key={`${label}-${item.label}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2 transition hover:border-[#D7AF4B]/60 hover:bg-[#fffaf0]">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-700">{item.label}</p>
+                      <p className="mt-1 text-sm font-semibold text-[#1E3557]">{displayValue(item.value)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {value.summary ? <p className="text-sm font-medium leading-6 text-slate-600">{value.summary}</p> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PanchangExtraBlocks({ extrasData, extrasLoading, extrasError, lagnaData }) {
+  const lagnaRows = normalizePanchangLagnaRows(lagnaData || extrasData?.panchang_lagna_table || extrasData?.provider_payload?.panchang_lagna_table);
+  const planetaryRows = normalizePlanetRows(extrasData?.planetary_positions);
+  const sunriseRows = normalizePlanetRows(extrasData?.sunrise_planetary_positions);
+  const lagnaColumns = [
+    { key: "lagna", label: "Lagna" },
+    { key: "startTime", label: "Start Time" },
+    { key: "endTime", label: "End Time" },
+  ];
+  const planetColumns = [
+    { key: "planet", label: "Planet" },
+    { key: "sign", label: "Sign" },
+    { key: "degree", label: "Degree" },
+    { key: "nakshatra", label: "Nakshatra" },
+    { key: "house", label: "House" },
+    { key: "motion", label: "Motion" },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-[#D7AF4B] px-5 py-4 text-[#1E3557]">
+        <h2 className="text-lg font-bold">
+          Planetary Positions
+        </h2>
+        <span className="inline-flex items-center gap-1 rounded-full bg-white/70 px-2.5 py-0.5 text-[11px] font-semibold text-[#1E3557] shadow-sm sm:hidden">
+          ← Swipe table →
+        </span>
+      </div>
+      <div className="space-y-6 p-4 sm:p-5 overflow-hidden">
+          {extrasLoading ? <p className="rounded-md bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-600">Loading planetary details...</p> : null}
+          {extrasError ? <p className="rounded-md bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{extrasError}</p> : null}
+          {!extrasLoading && !extrasError ? (
+            <>
+              <PanchangDataTable title="Panchang Lagna Table" rows={lagnaRows} columns={lagnaColumns} />
+              <PanchangDataTable title="Planetary Positions" rows={planetaryRows} columns={planetColumns} />
+              <PanchangDataTable title="Sunrise Planetary Positions" rows={sunriseRows} columns={planetColumns} />
+            </>
+          ) : null}
+      </div>
+    </section>
+  );
+}
+
+function ViewButtons({ activeView, onChange }) {
+  return (
+    <div className="mx-auto mt-14 grid max-w-5xl gap-6 md:grid-cols-3">
+      {Object.entries(VIEW_CONFIG).map(([key, view]) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => onChange(key)}
+          className={`min-h-[118px] rounded-md px-8 py-5 text-2xl font-black leading-tight text-white shadow-sm transition hover:-translate-y-0.5 ${
+            activeView === key
+              ? "bg-gradient-to-br from-[#1E3557] to-[#D4A73C]"
+              : "bg-gradient-to-br from-[#315f9d] to-[#8a6de8]"
+          }`}
+        >
+          {view.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PanchangEmptyState({ onRetry, onResetToday, selectedDate, place, errorMessage }) {
+  return (
+    <section className="mx-auto my-8 max-w-2xl rounded-2xl border border-amber-200 bg-gradient-to-b from-[#FFFDF9] to-[#FDF8EE] p-8 text-center shadow-sm">
+      <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 text-[#1E3557]">
+        <svg className="h-7 w-7 text-[#D4A73C]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+      </div>
+      <h3 className="text-xl font-black text-[#1E3557]">Panchang Data Not Available</h3>
+      <p className="mt-2 text-sm leading-6 text-slate-600">
+        {errorMessage || (
+          <>
+            We couldn't retrieve astrological calculations for <strong>{selectedDate}</strong> at <strong>{place}</strong>.
+            This can occur if the external calculation service is temporarily unavailable or coordinates need refinement.
+          </>
+        )}
+      </p>
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={onRetry}
+          className="inline-flex items-center gap-2 rounded-xl bg-[#1E3557] px-6 py-2.5 text-sm font-bold text-white shadow transition hover:bg-[#162744] active:scale-95"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Retry Calculation
+        </button>
+        <button
+          type="button"
+          onClick={onResetToday}
+          className="rounded-xl border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-95"
+        >
+          Reset to Today (New Delhi)
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export default function Panchang() {
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const today = useMemo(() => getTodayInIndia(), []);
+  const [activeView, setActiveView] = useState(() => {
+    const requestedView = searchParams.get("view");
+    return VIEW_CONFIG[requestedView] ? requestedView : "daily";
+  });
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [language, setLanguage] = useState("en");
+  const [place, setPlace] = useState(user?.place_of_birth || "New Delhi, Delhi, India");
+  const [coordinates, setCoordinates] = useState(
+    user?.latitude != null && user?.longitude != null
+      ? `${user.latitude},${user.longitude}`
+      : "28.6139,77.2090"
+  );
+  const [locationResults, setLocationResults] = useState([]);
+  const [loadingLocation, setLoadingLocation] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [fetchError, setFetchError] = useState("");
+  const [data, setData] = useState(null);
+  const [extrasData, setExtrasData] = useState(null);
+  const [extrasLoading, setExtrasLoading] = useState(false);
+  const [extrasError, setExtrasError] = useState("");
+
+  const selectedDateLabel = formatPageDate(selectedDate);
+  const selectedInputLabel = formatInputDateLabel(selectedDate);
+  const currentView = VIEW_CONFIG[activeView];
+
+  const showToast = (text) => {
+    setMessage(text);
+    window.clearTimeout(window.__astrozuraPanchangToast);
+    window.__astrozuraPanchangToast = window.setTimeout(() => setMessage(""), 3500);
+  };
+
+  const fetchPanchang = async (date, coords, mode = activeView, nextLanguage = language) => {
+    if (!coords) {
+      showToast("Select a valid location from the dropdown.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setFetchError("");
+      const datetime = `${date}T06:00:00+05:30`;
+      if (mode === "daily") {
+        setExtrasLoading(true);
+        setExtrasError("");
+      }
+      const [response, extrasResponse] = await Promise.all([
+        getPanchang(datetime, coords, 1, { mode, la: nextLanguage }),
+        mode === "daily"
+          ? getPanchangExtras(datetime, coords, 1, {
+              la: nextLanguage,
+              extras: ["panchang_lagna_table", "planetary_positions", "sunrise_planetary_positions"],
+            }).catch((error) => ({
+              status: "error",
+              message: error?.response?.data?.message || "Unable to load planetary details.",
+            }))
+          : Promise.resolve(null),
+      ]);
+      if (response?.status === "success") {
+        setData(response.data);
+        setFetchError("");
+        if (mode === "daily") {
+          if (extrasResponse?.status === "success") {
+            setExtrasData(extrasResponse.data);
+          } else {
+            setExtrasData(null);
+            setExtrasError(extrasResponse?.message || "Unable to load planetary details.");
+          }
+        } else {
+          setExtrasData(null);
+          setExtrasError("");
+        }
+      } else {
+        const err = response?.message || "Unable to fetch Panchang.";
+        setFetchError(err);
+        showToast(err);
+      }
+    } catch (error) {
+      const err = error?.response?.data?.message || "Unable to fetch Panchang.";
+      setFetchError(err);
+      showToast(err);
+    } finally {
+      setLoading(false);
+      setExtrasLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchPanchang(selectedDate, coordinates, activeView, language);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const requestedView = searchParams.get("view");
+    const nextView = VIEW_CONFIG[requestedView] ? requestedView : "daily";
+    if (nextView === activeView) return;
+    setActiveView(nextView);
+    void fetchPanchang(selectedDate, coordinates, nextView, language);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const handleSearchLocation = async (value) => {
+    setPlace(value);
+    setCoordinates("");
+    if (value.trim().length < 3) {
+      setLocationResults([]);
+      return;
+    }
+
+    try {
+      setLoadingLocation(true);
+      const response = await searchLocation(value.trim(), language);
+      setLocationResults(response?.data || []);
+    } finally {
+      setLoadingLocation(false);
+    }
+  };
+
+  const selectLocation = async (item) => {
+    const nextCoordinates = `${item.coordinates.latitude},${item.coordinates.longitude}`;
+    setPlace(item.name);
+    setCoordinates(nextCoordinates);
+    setLocationResults([]);
+    await fetchPanchang(selectedDate, nextCoordinates);
+  };
+
+  const handleDateChange = async (nextDate) => {
+    setSelectedDate(nextDate);
+    await fetchPanchang(nextDate, coordinates);
+  };
+
+  const moveDate = async (offset) => {
+    const date = new Date(`${selectedDate}T00:00:00+05:30`);
+    date.setDate(date.getDate() + offset);
+    const nextDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Kolkata" }).format(date);
+    await handleDateChange(nextDate);
+  };
+
+  const handleLanguageChange = async (event) => {
+    const nextLanguage = event.target.value;
+    setLanguage(nextLanguage);
+    await fetchPanchang(selectedDate, coordinates, activeView, nextLanguage);
+  };
+
+  const handleViewChange = async (view) => {
+    setActiveView(view);
+    setSearchParams(view === "daily" ? {} : { view });
+    await fetchPanchang(selectedDate, coordinates, view, language);
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    await fetchPanchang(selectedDate, coordinates);
+  };
+
+  const summary = data?.summary || {};
+  const panchang = data?.panchang || {};
+  const providerPayload = data?.provider_payload || {};
+  const providerBasic = providerPayload.basic_panchang?.data || providerPayload.basic_panchang || {};
+  const providerAdvanced = providerPayload.advanced_panchang?.data || providerPayload.advanced_panchang || {};
+  const basic = Object.keys(panchang.basic || {}).length ? panchang.basic : providerBasic;
+  const advanced = Object.keys(panchang.advanced || {}).length ? panchang.advanced : providerAdvanced;
+  const panchangChart = panchang.chart || data?.provider_payload?.panchang_chart || extrasData?.panchang_chart;
+  const panchangLagnaTable = panchang.lagna_table || panchang.panchang_lagna_table || data?.provider_payload?.panchang_lagna_table || extrasData?.panchang_lagna_table;
+  const festivalText = festivalTextFromPayload(
+    panchang.festival,
+    data?.provider_payload?.panchang_festival,
+    advanced.festivals,
+    advanced.vrat,
+    basic.festivals
+  );
+  const hinduMaah = advanced.hindu_maah || {};
+  const horaRows = splitMuhurtaRows(panchang.hora, ["hora", "planet", "name"]);
+  const chaughadiyaRows = splitMuhurtaRows(panchang.chaughadiya, ["muhurta", "name"]);
+
+  const dailyCardRows = [
+    ["Sunrise", formatTime(summary.sunrise || advanced.sunrise || basic.sunrise)],
+    ["Sunset", formatTime(summary.sunset || advanced.sunset || basic.sunset)],
+    ["Moonrise", formatTime(summary.moonrise || advanced.moonrise || basic.moonrise)],
+    ["Moonset", formatTime(summary.moonset || advanced.moonset || basic.moonset)],
+    ["Vedic Sunrise", formatTime(advanced.vedic_sunrise || basic.vedic_sunrise)],
+    ["Vedic Sunset", formatTime(advanced.vedic_sunset || basic.vedic_sunset)],
+    ["Sun Sign", valueFrom(advanced.sun_sign, basic.sun_sign, advanced.sunSign)],
+    ["Moon Sign", valueFrom(advanced.moon_sign, basic.moon_sign, advanced.moonSign)],
+  ];
+
+  const elementRows = [
+    [
+      "Tithi",
+      elementWithDetails(valueFrom(summary.current_tithi?.name, advanced.tithi?.details?.tithi_name), summary.current_tithi?.end, advanced.tithi?.details, [
+        ["tithi_number", "Tithi Number"],
+        ["tithi_name", "Tithi Name"],
+        ["special", "Special"],
+        ["deity", "Deity"],
+        ["summary", "Summary"],
+      ]),
+    ],
+    [
+      "Nakshatra",
+      elementWithDetails(valueFrom(summary.current_nakshatra?.name, advanced.nakshatra?.details?.nak_name), summary.current_nakshatra?.end, advanced.nakshatra?.details, [
+        ["nak_number", "Nakshatra Number"],
+        ["nak_name", "Nakshatra Name"],
+        ["ruler", "Ruler"],
+        ["deity", "Deity"],
+        ["special", "Special"],
+        ["summary", "Summary"],
+      ]),
+    ],
+    [
+      "Yog",
+      elementWithDetails(valueFrom(summary.current_yoga?.name, advanced.yog?.details?.yog_name), summary.current_yoga?.end, advanced.yog?.details, [
+        ["yog_number", "Yog Number"],
+        ["yog_name", "Yog Name"],
+        ["special", "Special"],
+        ["meaning", "Meaning"],
+      ]),
+    ],
+    [
+      "Karan",
+      elementWithDetails(valueFrom(summary.current_karana?.name, advanced.karan?.details?.karan_name), summary.current_karana?.end, advanced.karan?.details, [
+        ["karan_number", "Karan Number"],
+        ["karan_name", "Karan Name"],
+        ["special", "Special"],
+        ["deity", "Deity"],
+      ]),
+    ],
+  ];
+
+  const monthYearRows = [
+    ["Vikram Samvat", valueFrom(advanced.vikram_samvat, basic.vikram_samvat)],
+    ["Vikram Samvat Name", valueFrom(advanced.vkram_samvat_name, advanced.vikram_samvat_name, basic.vikram_samvat_name)],
+    ["Shaka Samvat", valueFrom(advanced.shaka_samvat, basic.shaka_samvat, advanced.shaka_samvat_name)],
+    ["Shaka Samvat Name", valueFrom(advanced.shaka_samvat_name, basic.shaka_samvat_name)],
+    ["Paksha", valueFrom(advanced.paksha, summary.current_tithi?.paksha, advanced.tithi?.details?.paksha)],
+    ["Ritu", valueFrom(advanced.ritu, basic.ritu)],
+    ["Ayana", valueFrom(advanced.ayana, advanced.ayan, basic.ayana)],
+    ["Purnimanta", valueFrom(hinduMaah.purnimanta, advanced.purnimanta, basic.purnimanta)],
+    ["Amanta", valueFrom(hinduMaah.amanta, advanced.amanta, basic.amanta)],
+    ["Adhik Maas", hinduMaah.adhik_status === true ? "Yes" : hinduMaah.adhik_status === false ? "No" : "-"],
+    ["Sun Sign", valueFrom(advanced.sun_sign, basic.sun_sign)],
+    ["Moon Sign", valueFrom(advanced.moon_sign, basic.moon_sign)],
+  ];
+
+  const inauspiciousRows = [
+    ["Rahu Kaal", valueFrom(timeRange(advanced.rahukaal))],
+    ["Yamghant Kaal", valueFrom(timeRange(advanced.yamghant_kaal))],
+    ["Gulika Kaal", valueFrom(timeRange(advanced.guliKaal), timeRange(advanced.gulikaal), timeRange(advanced.gulika_kaal))],
+  ];
+
+  const auspiciousRows = [
+    ["Abhijit Muhurta", valueFrom(timeRange(advanced.abhijit_muhurta))],
+    ["Amrit Kalam", valueFrom(timeRange(advanced.amrit_kalam))],
+    [
+      "Panchang Yog",
+      valueFrom(
+        advanced.panchang_yog,
+        advanced.panchang_yoga,
+        advanced.panchangYog,
+        advanced.panchangYoga,
+        basic.panchang_yog,
+        basic.panchang_yoga,
+        basic.panchangYog,
+        basic.panchangYoga
+      ),
+    ],
+  ];
+
+  const directionalRows = [
+    ["Disha Shool", valueFrom(advanced.disha_shool)],
+    ["Nakshatra Shool", valueFrom(advanced.nak_shool?.direction, advanced.nakshatra_shool)],
+    ["Moon Nivas", valueFrom(advanced.moon_nivas, advanced.moon_nivash)],
+  ];
+
+  const hasPanchangData = Boolean(
+    data && (
+      summary.sunrise ||
+      advanced.sunrise ||
+      basic.sunrise ||
+      summary.current_tithi?.name ||
+      advanced.tithi?.details?.tithi_name ||
+      advanced.sun_sign ||
+      basic.sun_sign ||
+      (Array.isArray(panchangChart) && panchangChart.length > 0)
+    )
+  );
+
+  return (
+    <div className="min-h-screen overflow-x-hidden bg-white font-sans text-[#1E3557]">
+      {message && (
+        <div className="fixed left-1/2 top-24 z-[70] -translate-x-1/2 rounded-xl bg-[#1E3557] px-6 py-3 text-sm font-medium text-white shadow-lg">
+          {message}
+        </div>
+      )}
+      <Navbar />
+
+      <section className="bg-gradient-to-r from-[#1E3557] via-[#315f9d] to-[#D4A73C] text-white">
+        <div className="mx-auto max-w-6xl px-4 py-5 md:px-8">
+          <h1 className="max-w-[340px] text-xl font-black leading-tight sm:max-w-none sm:text-2xl md:text-4xl">
+            {currentView.title} For {selectedDateLabel}
+          </h1>
+        </div>
+      </section>
+
+      <section className="border-b border-slate-200 bg-white">
+        <form
+          onSubmit={handleSubmit}
+          className="mx-auto grid max-w-6xl gap-3 px-3 py-4 md:gap-5 md:px-8 md:py-5 lg:grid-cols-[180px_170px_minmax(260px,1fr)_170px_250px]"
+        >
+          <FieldShell label="Select Date" hint="Format: DD-MM-YYYY">
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(event) => void handleDateChange(event.target.value)}
+              className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[#D4A73C] md:h-12"
+            />
+          </FieldShell>
+
+          <FieldShell label="Select Panchang Place">
+            <select
+              value="India"
+              disabled
+              className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 md:h-12"
+            >
+              <option>India</option>
+            </select>
+          </FieldShell>
+
+          <FieldShell label="Location">
+            <div className="relative">
+              <input
+                type="text"
+                value={place}
+                onChange={(event) => void handleSearchLocation(event.target.value)}
+                placeholder="Search city"
+                className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#D4A73C] md:h-12 md:px-4 md:text-base"
+              />
+              {loadingLocation && <div className="absolute right-4 top-4 h-4 w-4 animate-spin rounded-full border-b-2 border-[#D4A73C]" />}
+              {locationResults.length > 0 && (
+                <div className="absolute z-50 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl">
+                  {locationResults.map((item, index) => (
+                    <button
+                      key={`${item.name}-${index}`}
+                      type="button"
+                      onClick={() => void selectLocation(item)}
+                      className="block w-full border-b border-slate-100 px-4 py-3 text-left text-sm hover:bg-slate-50 last:border-0"
+                    >
+                      {item.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </FieldShell>
+
+          <FieldShell label="Select Language">
+            <select
+              value={language}
+              onChange={(event) => void handleLanguageChange(event)}
+              className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus:border-[#D4A73C] md:h-12"
+            >
+              {LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </FieldShell>
+
+          <div className="grid grid-cols-2 gap-2 self-end">
+            <button type="button" onClick={() => void moveDate(-1)} className="h-11 rounded-md bg-[#1E3557] px-4 text-sm font-bold text-white hover:bg-[#172a46] md:h-12">
+              Previous
+            </button>
+            <button type="button" onClick={() => void moveDate(1)} className="h-11 rounded-md bg-[#1E3557] px-4 text-sm font-bold text-white hover:bg-[#172a46] md:h-12">
+              Next
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <main className="mx-auto max-w-6xl px-4 py-12 md:px-8">
+        {loading ? (
+          <div className="mb-6 flex items-center gap-2 rounded-md bg-[#fff8df] px-4 py-3 text-sm font-semibold text-[#7a5205]">
+            <span className="h-2 w-2 animate-ping rounded-full bg-[#D4A73C]" />
+            <span>Loading selected Panchang calculations...</span>
+          </div>
+        ) : null}
+
+        {!loading && (!data || !hasPanchangData || fetchError) ? (
+          <PanchangEmptyState
+            selectedDate={selectedInputLabel}
+            place={place}
+            errorMessage={fetchError}
+            onRetry={() => void fetchPanchang(selectedDate, coordinates, activeView, language)}
+            onResetToday={() => {
+              setSelectedDate(today);
+              setCoordinates("28.6139,77.2090");
+              setPlace("New Delhi, Delhi, India");
+              void fetchPanchang(today, "28.6139,77.2090", activeView, language);
+            }}
+          />
+        ) : activeView === "daily" ? (
+          <div className="space-y-8">
+            <div className="grid gap-8 lg:grid-cols-[minmax(280px,0.9fr)_minmax(0,1.6fr)]">
+              <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
+                <div className="bg-[#D7AF4B] p-5 text-[#1E3557]">
+                  <h2 className="text-xl font-bold">{selectedInputLabel}</h2>
+                  <p className="mt-2 text-xs font-bold uppercase tracking-wide opacity-80">Ayana - {valueFrom(advanced.ayan, advanced.ayana)}</p>
+                  <p className="mt-1 text-sm font-semibold">{valueFrom(summary.vaara, advanced.day)}</p>
+                </div>
+                <div className="grid grid-cols-2 divide-x divide-y divide-slate-100 border-t border-[#D7AF4B]">
+                  {dailyCardRows.map(([label, value]) => (
+                    <div key={label} className="p-4 bg-white transition hover:bg-slate-50/60 border-t border-l border-slate-100 first:border-t-0 odd:border-l-0">
+                      <p className="text-xs font-black uppercase tracking-wider text-slate-600">{label}</p>
+                      <p className="mt-1 text-sm font-semibold text-[#1E3557]">{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <PanchangElementsTable rows={elementRows} />
+            </div>
+
+            <InfoTable title="Hindu Month & Year" rows={monthYearRows} columnsClass="grid-cols-2 md:grid-cols-3 xl:grid-cols-4" />
+
+            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
+              <div className="grid md:grid-cols-[290px_1fr] items-center">
+                <div className="bg-[#D7AF4B] px-5 py-4 text-base font-bold text-[#1E3557] h-full flex items-center">Today's Festival & Vratas</div>
+                <div className="px-5 py-4 text-base font-semibold text-[#1E3557]">{festivalText}</div>
+              </div>
+            </section>
+
+            <div className="grid gap-8 lg:grid-cols-[2fr_1fr]">
+              <InfoTable title="Inauspicious Timing" rows={inauspiciousRows} />
+              <InfoTable title="Auspicious Timing" rows={auspiciousRows} />
+            </div>
+
+            <div className="grid gap-8">
+              <InfoTable title="Shool & Nivas" rows={directionalRows} />
+            </div>
+
+            <PanchangChartBlock chartData={panchangChart} />
+
+            <PanchangExtraBlocks
+              extrasData={extrasData}
+              extrasLoading={extrasLoading}
+              extrasError={extrasError}
+              lagnaData={panchangLagnaTable}
+            />
+          </div>
+        ) : (
+          <div>
+            <section className="mx-auto max-w-4xl">
+              <h2 className="text-3xl font-black text-slate-950">
+                {activeView === "hora" ? "Hora" : "Chaughadiya"} for {selectedInputLabel}
+              </h2>
+              <p className="mt-2 text-base font-medium text-[#315f9d]">{place}</p>
+              <p className="mt-7 max-w-4xl text-lg leading-8 text-slate-600">{currentView.intro}</p>
+            </section>
+
+            <div className="mx-auto mt-14 grid max-w-4xl gap-16 md:grid-cols-2">
+              {activeView === "hora" ? (
+                <>
+                  <MuhurtaTable title="Day Hora" rows={horaRows.day} />
+                  <MuhurtaTable title="Night Hora" rows={horaRows.night} />
+                </>
+              ) : (
+                <>
+                  <MuhurtaTable title="Day Chaughadiya" rows={chaughadiyaRows.day} rowClass={chaughadiyaClass} />
+                  <MuhurtaTable title="Night Chaughadiya" rows={chaughadiyaRows.night} rowClass={chaughadiyaClass} />
+                </>
+              )}
+            </div>
+
+            {activeView === "chaughadiya" ? (
+              <section className="mx-auto mt-20 max-w-4xl">
+                <h2 className="text-3xl font-black text-slate-950">About Chaughadiya</h2>
+                <p className="mt-8 text-lg leading-8 text-slate-600">
+                  Ghadi is an ancient measure for calculations of time in India. Chaughadiya divides the day and night into practical muhurta windows used for planning routine and auspicious work.
+                </p>
+                <p className="mt-8 text-lg font-black text-slate-950">There are generally seven types of Chaughadiya.</p>
+                <div className="mt-6 space-y-4 text-lg text-slate-600">
+                  <p><span className="mr-3 inline-block h-7 w-7 rounded-md bg-emerald-100 align-middle" /> Amrit, Shubh and Labh are considered auspicious Chaughadiyas.</p>
+                  <p><span className="mr-3 inline-block h-7 w-7 rounded-md bg-rose-100 align-middle" /> Udveg, Kaal and Rog are considered inauspicious Chaughadiyas.</p>
+                  <p><span className="mr-3 inline-block h-7 w-7 rounded-md bg-sky-100 align-middle" /> Char is considered a good Chaughadiya.</p>
+                </div>
+              </section>
+            ) : null}
+          </div>
+        )}
+
+        <ViewButtons activeView={activeView} onChange={handleViewChange} />
+      </main>
+
+      <Footer />
+    </div>
+  );
+}

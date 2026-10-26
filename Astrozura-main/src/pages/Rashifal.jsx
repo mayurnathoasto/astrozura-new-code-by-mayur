@@ -1,0 +1,374 @@
+import { useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import Navbar from "../components/Navbar";
+import Footer from "../components/Footer";
+import { FaArrowRight, FaBriefcase, FaHeartbeat, FaHeart, FaMagic } from "react-icons/fa";
+import { getDailyHoroscope, getMonthlyHoroscope } from "../api/prokeralaApi";
+import { getZodiacIcon } from "../data/zodiacIcons";
+import { useAuth } from "../context/AuthContext";
+import api from "../api/axios";
+import { ensureRazorpayConfigured, payWithRazorpay } from "../api/paymentApi";
+
+const zodiacs = [
+  { name: "Aries", key: "aries", date: "Mar 21 - Apr 19", element: "fire", ruler: "mars", tone: "from-[#f97316] to-[#dc2626]", surface: "bg-[#fff6ed]", accent: "text-[#c2410c]" },
+  { name: "Taurus", key: "taurus", date: "Apr 20 - May 20", element: "earth", ruler: "venus", tone: "from-[#84cc16] to-[#15803d]", surface: "bg-[#f4fbec]", accent: "text-[#3f7a14]" },
+  { name: "Gemini", key: "gemini", date: "May 21 - Jun 20", element: "air", ruler: "mercury", tone: "from-[#38bdf8] to-[#2563eb]", surface: "bg-[#eef8ff]", accent: "text-[#1d4ed8]" },
+  { name: "Cancer", key: "cancer", date: "Jun 21 - Jul 22", element: "water", ruler: "moon", tone: "from-[#22d3ee] to-[#0f766e]", surface: "bg-[#eefdfb]", accent: "text-[#0f766e]" },
+  { name: "Leo", key: "leo", date: "Jul 23 - Aug 22", element: "fire", ruler: "sun", tone: "from-[#facc15] to-[#ea580c]", surface: "bg-[#fff9db]", accent: "text-[#b45309]" },
+  { name: "Virgo", key: "virgo", date: "Aug 23 - Sep 22", element: "earth", ruler: "mercury", tone: "from-[#a3a866] to-[#64748b]", surface: "bg-[#f8f7ee]", accent: "text-[#5b621f]" },
+  { name: "Libra", key: "libra", date: "Sep 23 - Oct 22", element: "air", ruler: "venus", tone: "from-[#f0abfc] to-[#7c3aed]", surface: "bg-[#fdf2ff]", accent: "text-[#7e22ce]" },
+  { name: "Scorpio", key: "scorpio", date: "Oct 23 - Nov 21", element: "water", ruler: "pluto", tone: "from-[#fb7185] to-[#7f1d1d]", surface: "bg-[#fff1f2]", accent: "text-[#be123c]" },
+  { name: "Sagittarius", key: "sagittarius", date: "Nov 22 - Dec 21", element: "fire", ruler: "jupiter", tone: "from-[#f59e0b] to-[#a855f7]", surface: "bg-[#fff7ed]", accent: "text-[#9333ea]" },
+  { name: "Capricorn", key: "capricorn", date: "Dec 22 - Jan 19", element: "earth", ruler: "saturn", tone: "from-[#94a3b8] to-[#334155]", surface: "bg-[#f8fafc]", accent: "text-[#334155]" },
+  { name: "Aquarius", key: "aquarius", date: "Jan 20 - Feb 18", element: "air", ruler: "uranus", tone: "from-[#60a5fa] to-[#4338ca]", surface: "bg-[#eff6ff]", accent: "text-[#3730a3]" },
+  { name: "Pisces", key: "pisces", date: "Feb 19 - Mar 20", element: "water", ruler: "neptune", tone: "from-[#2dd4bf] to-[#6366f1]", surface: "bg-[#f0fdfa]", accent: "text-[#0f766e]" },
+];
+
+export default function Rashifal() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedSign, setSelectedSign] = useState(null);
+  const initialPeriod = searchParams.get("period");
+  const [activeTab, setActiveTab] = useState(
+    ["yesterday", "today", "tomorrow", "monthly", "yearly"].includes(initialPeriod) ? initialPeriod : "today"
+  );
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [yearlyLoading, setYearlyLoading] = useState(false);
+  const [yearlyMessage, setYearlyMessage] = useState("");
+  const [yearlyReport, setYearlyReport] = useState(null);
+  const [yearlyForm, setYearlyForm] = useState({
+    year: String(new Date().getFullYear()),
+  });
+
+  const fetchHoroscope = async (sign, day) => {
+    try {
+      setLoading(true);
+      setError("");
+      setData(null);
+
+      const response = day === "monthly"
+        ? await getMonthlyHoroscope(sign.toLowerCase())
+        : await getDailyHoroscope(sign.toLowerCase(), day);
+      if (response?.status === "success" && response?.data) {
+        setData(response.data);
+        return;
+      }
+
+      setError(response?.message || t("horoscope.fetch_error"));
+    } catch (fetchError) {
+      console.error("Horoscope fetch error:", fetchError?.response?.data || fetchError.message);
+      setError(fetchError?.response?.data?.message || t("horoscope.fetch_error"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSelect = (zodiac) => {
+    setSelectedSign(zodiac);
+    setYearlyReport(null);
+    setYearlyMessage("");
+    if (activeTab !== "yearly") {
+      fetchHoroscope(zodiac.name, activeTab);
+    }
+  };
+
+  const handleTabChange = (day) => {
+    setActiveTab(day);
+    setSearchParams({ period: day });
+    setYearlyReport(null);
+    setYearlyMessage("");
+    if (day === "yearly") {
+      setData(null);
+      setError("");
+      return;
+    }
+    if (selectedSign) {
+      fetchHoroscope(selectedSign.name, day);
+    }
+  };
+
+  const unlockYearlyHoroscope = async () => {
+    if (!user) {
+      navigate("/login");
+      return null;
+    }
+
+    const year = Number(yearlyForm.year || new Date().getFullYear());
+    await ensureRazorpayConfigured();
+    const { data: accessResponse } = await api.post("/horoscope/yearly/access", { year });
+    const accessRecord = accessResponse?.data;
+    if (!accessRecord?.id) {
+      throw new Error("Unable to initialize yearly horoscope access.");
+    }
+    if (accessRecord.payment_status !== "paid") {
+      await payWithRazorpay({
+        purpose: "yearly_horoscope",
+        recordId: accessRecord.id,
+        name: user?.name,
+        email: user?.email,
+        contact: user?.phone,
+        description: `Yearly horoscope access for ${year}`,
+      });
+    }
+    return accessRecord;
+  };
+
+  const generateYearlyHoroscope = async (event) => {
+    event.preventDefault();
+    if (!selectedSign?.key) {
+      setYearlyMessage("Select a zodiac sign first.");
+      return;
+    }
+
+    try {
+      setYearlyLoading(true);
+      setYearlyMessage("");
+      setYearlyReport(null);
+      await unlockYearlyHoroscope();
+
+      const { data: reportResponse } = await api.post("/horoscope/yearly/report", {
+        sign: selectedSign.key,
+        year: Number(yearlyForm.year || new Date().getFullYear()),
+      });
+
+      if (reportResponse?.status === "success") {
+        setYearlyReport(reportResponse.data);
+      } else {
+        setYearlyMessage(reportResponse?.message || "Unable to generate yearly horoscope.");
+      }
+    } catch (err) {
+      setYearlyMessage(err?.response?.data?.message || err?.message || "Payment or report generation failed.");
+    } finally {
+      setYearlyLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#f8f9fa] font-sans">
+      <Navbar />
+
+      <section className="relative bg-[#1E3557] px-4 py-20 text-center text-white md:px-8">
+        <div className="absolute inset-0 border-b opacity-10" style={{ backgroundImage: "radial-gradient(#D4A73C 1px, transparent 1px)", backgroundSize: "30px 30px" }} />
+        <div className="relative mx-auto max-w-4xl">
+          <span className="mb-4 inline-block rounded-full border border-[#D4A73C]/30 bg-[#D4A73C]/10 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-[#D4A73C]">
+            {t("horoscope.eyebrow")}
+          </span>
+          <h1 className="mx-auto mb-4 max-w-[235px] text-lg font-extrabold leading-tight sm:max-w-[520px] sm:text-3xl md:max-w-none md:text-5xl">
+            <span className="sm:hidden">Zodiac Horoscope</span>
+            <span className="hidden sm:inline">{t("horoscope.page_title")}</span>
+          </h1>
+          <p className="mx-auto max-w-[285px] text-sm leading-6 text-gray-300 sm:max-w-2xl md:text-xl">{t("horoscope.page_subtitle")}</p>
+        </div>
+      </section>
+
+      <div className="relative z-10 mx-auto grid w-full max-w-7xl flex-1 gap-8 px-4 py-16 -mt-8 md:px-8">
+        {!selectedSign ? (
+          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {zodiacs.map((zodiac) => (
+              <button
+                key={zodiac.name}
+                type="button"
+                onClick={() => handleSelect(zodiac)}
+                className={`group relative min-h-[230px] overflow-hidden rounded-[1.35rem] border border-white/80 ${zodiac.surface} p-5 text-left shadow-[0_18px_45px_rgba(15,23,42,0.08)] transition duration-300 hover:-translate-y-1 hover:shadow-[0_24px_60px_rgba(15,23,42,0.14)] focus:outline-none focus:ring-2 focus:ring-[#D4A73C]`}
+              >
+                <div className={`absolute -right-8 -top-10 h-32 w-32 rounded-full bg-gradient-to-br ${zodiac.tone} opacity-20 transition group-hover:scale-125`} />
+                <div className="absolute inset-x-5 top-0 h-1 rounded-b-full bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+
+                <div className="relative flex flex-wrap items-start justify-between gap-3">
+                  <span className="rounded-full border border-white/70 bg-white/70 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-600 shadow-sm">
+                    {t(`horoscope.elements.${zodiac.element}`)}
+                  </span>
+                  <span className="rounded-full bg-white/65 px-3 py-1 text-xs font-semibold text-slate-500 shadow-sm">
+                    {zodiac.date}
+                  </span>
+                </div>
+
+                <div className="relative mt-7 flex items-center gap-4">
+                  <div className="grid h-20 w-20 shrink-0 place-items-center rounded-2xl border-2 border-[#F0E4CB] bg-white shadow-lg shadow-slate-900/10">
+                    <img src={getZodiacIcon(zodiac.key)} alt="" className="h-14 w-14 object-contain" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-2xl font-black text-[#1E3557]">{t(`horoscope.signs.${zodiac.key}`)}</h3>
+                    <p className={`mt-1 text-sm font-semibold ${zodiac.accent}`}>
+                      {t("horoscope.ruled_by", { ruler: t(`horoscope.rulers.${zodiac.ruler}`) })}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="relative mt-7 flex items-center justify-between border-t border-white/70 pt-4">
+                  <p className="text-sm font-medium text-slate-600">
+                    {t("horoscope.open_reading", { period: t(`horoscope.${activeTab}`) })}
+                  </p>
+                  <span className={`grid h-9 w-9 place-items-center rounded-full bg-white ${zodiac.accent} shadow-sm transition group-hover:translate-x-1`}>
+                    <FaArrowRight size={14} />
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className={`mx-auto w-full max-w-5xl overflow-hidden rounded-3xl border border-white/80 ${selectedSign.surface} shadow-xl`}>
+            <div className={`relative overflow-hidden ${selectedSign.surface} p-8 text-center text-[#1E3557]`}>
+              <div className={`pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-gradient-to-br ${selectedSign.tone} opacity-20`} />
+              <div className={`pointer-events-none absolute -left-20 bottom-0 h-40 w-40 rounded-full bg-gradient-to-br ${selectedSign.tone} opacity-10`} />
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSign(null);
+                  setData(null);
+                  setError("");
+                }}
+                className="absolute left-4 top-4 rounded-lg border border-slate-200 px-3 py-1 text-sm text-slate-500 hover:text-[#1E3557]"
+              >
+                {t("horoscope.back")}
+              </button>
+              <div className="relative mx-auto mb-3 grid h-24 w-24 place-items-center rounded-2xl border-2 border-[#F0E4CB] bg-white shadow-lg shadow-slate-900/10">
+                <img src={getZodiacIcon(selectedSign.key)} alt="" className="h-20 w-20 object-contain" />
+              </div>
+              <h2 className="relative text-3xl font-bold">{t("horoscope.sign_heading", { sign: t(`horoscope.signs.${selectedSign.key}`) })}</h2>
+              <p className={`relative mt-1 font-semibold ${selectedSign.accent}`}>{selectedSign.date}</p>
+            </div>
+
+            <div className="bg-white/80 p-6 backdrop-blur md:p-10">
+              <div className="mx-auto mb-10 flex w-max flex-wrap justify-center gap-2 rounded-xl border bg-gray-50 p-2">
+                {["yesterday", "today", "tomorrow", "monthly", "yearly"].map((day) => (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => handleTabChange(day)}
+                    className={`rounded-lg px-6 py-2 font-semibold capitalize transition ${activeTab === day ? "bg-[#1E3557] text-[#D4A73C] shadow-md" : "text-gray-600 hover:bg-gray-100"}`}
+                  >
+                    {day === "yearly" ? "Yearly (Rs 25)" : day === "monthly" ? "Monthly (Rs 10)" : t(`horoscope.${day}`)}
+                  </button>
+                ))}
+              </div>
+
+              {activeTab === "yearly" ? (
+                <div className="space-y-8 animate-fadeIn">
+                  <div className="rounded-2xl border border-[#D4A73C]/30 bg-[#fff9e8] p-6 text-center">
+                    <h3 className="text-2xl font-black text-[#1E3557]">Yearly Horoscope</h3>
+                    <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-700">
+                      Unlock the zodiac yearly horoscope for {t(`horoscope.signs.${selectedSign.key}`)} for Rs 25. Access remains open for 12 hours after payment.
+                      <span className="ml-2 rounded-full bg-white px-3 py-1 text-xs font-black text-[#1E3557]">
+                        <span className="mr-1 text-slate-400 line-through">Rs 50</span> Rs 25, 50% off
+                      </span>
+                    </p>
+                  </div>
+
+                  <form onSubmit={generateYearlyHoroscope} className="grid gap-4 rounded-2xl border border-gray-100 bg-gray-50 p-5 md:grid-cols-[180px_1fr]">
+                    <label className="text-sm font-semibold text-slate-700">
+                      Year
+                      <input required type="number" min="1900" max="2100" value={yearlyForm.year} onChange={(event) => setYearlyForm({ ...yearlyForm, year: event.target.value })} className="mt-2 w-full rounded-xl border px-3 py-2" />
+                    </label>
+                    <div className="flex items-end">
+                      <button disabled={yearlyLoading} className="rounded-xl bg-[#1E3557] px-6 py-3 text-sm font-black uppercase tracking-wider text-white shadow-lg disabled:opacity-60">
+                        {yearlyLoading ? "Processing..." : user ? "Unlock & Generate" : "Login to Unlock"}
+                      </button>
+                    </div>
+                    {yearlyMessage && <p className="text-sm font-semibold text-red-600 md:col-span-2">{yearlyMessage}</p>}
+                  </form>
+
+                  {yearlyReport?.horoscope?.daily_prediction ? (
+                    <div className="rounded-2xl border border-gray-100 bg-white p-5">
+                      <div className="mb-5 text-sm font-semibold text-slate-500">
+                        Access active until {new Date(yearlyReport.access_expires_at).toLocaleString()}
+                      </div>
+                      <div className="mb-5 rounded-2xl border border-[#F0E4CB] bg-[#FCF9F2] p-5">
+                        <p className="text-xs font-black uppercase tracking-wider text-slate-400">Yearly forecast</p>
+                        <p className="mt-2 text-lg font-black text-[#1E3557]">
+                          {t(`horoscope.signs.${selectedSign.key}`)} {yearlyReport.year}
+                        </p>
+                      </div>
+                      <div className="grid gap-6 md:grid-cols-2">
+                        <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-indigo-900">
+                            <FaMagic className="text-indigo-500" /> {t("horoscope.personal_insights")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-indigo-800">{yearlyReport.horoscope.daily_prediction.personal || t("horoscope.no_insights")}</p>
+                        </div>
+                        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-blue-900">
+                            <FaBriefcase className="text-blue-500" /> {t("horoscope.career_professional")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-blue-800">{yearlyReport.horoscope.daily_prediction.profession || t("horoscope.no_insights")}</p>
+                        </div>
+                        <div className="rounded-2xl border border-rose-100 bg-rose-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-rose-900">
+                            <FaHeartbeat className="text-rose-500" /> {t("horoscope.health")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-rose-800">{yearlyReport.horoscope.daily_prediction.health || t("horoscope.no_insights")}</p>
+                        </div>
+                        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-amber-900">
+                            <FaHeart className="text-amber-500" /> {t("horoscope.emotions_luck")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-amber-800">{yearlyReport.horoscope.daily_prediction.emotions || t("horoscope.no_insights")}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : loading ? (
+                <div className="flex flex-col items-center justify-center py-20">
+                  <div className="mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-[#1E3557]" />
+                  <p className="text-gray-500">{t("horoscope.reading")}</p>
+                </div>
+              ) : error ? (
+                <div className="rounded-2xl border border-red-100 bg-red-50 p-10 text-center">
+                  <p className="text-red-700">{error}</p>
+                </div>
+              ) : (
+                <div className="space-y-8 animate-fadeIn">
+                  {data?.daily_prediction ? (
+                    <>
+                      <div className="text-center text-sm text-gray-500">
+                        {t("horoscope.prediction_date")}: {data.date || t("horoscope.not_provided")}
+                      </div>
+                      <div className="grid gap-6 md:grid-cols-2">
+                        <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-indigo-900">
+                            <FaMagic className="text-indigo-500" /> {t("horoscope.personal_insights")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-indigo-800">{data.daily_prediction.personal || t("horoscope.no_insights")}</p>
+                        </div>
+                        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-blue-900">
+                            <FaBriefcase className="text-blue-500" /> {t("horoscope.career_professional")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-blue-800">{data.daily_prediction.profession || t("horoscope.no_insights")}</p>
+                        </div>
+                        <div className="rounded-2xl border border-rose-100 bg-rose-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-rose-900">
+                            <FaHeartbeat className="text-rose-500" /> {t("horoscope.health")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-rose-800">{data.daily_prediction.health || t("horoscope.no_insights")}</p>
+                        </div>
+                        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-6">
+                          <h4 className="mb-2 flex items-center gap-2 font-bold text-amber-900">
+                            <FaHeart className="text-amber-500" /> {t("horoscope.emotions_luck")}
+                          </h4>
+                          <p className="text-sm leading-relaxed text-amber-800">{data.daily_prediction.emotions || t("horoscope.no_insights")}</p>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border bg-gray-50 p-10 text-center">
+                      <p className="text-gray-600">{t("horoscope.quiet")}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <Footer />
+    </div>
+  );
+}

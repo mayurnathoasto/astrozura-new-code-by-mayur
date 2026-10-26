@@ -1,0 +1,418 @@
+import { useState, useEffect } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import Navbar from "../components/Navbar";
+import Footer from "../components/Footer";
+import { FaStar } from "react-icons/fa";
+import avatar from "../assets/astrologer-avatar.jpg";
+import AstrologerStatusBadge from "../components/AstrologerStatusBadge";
+import { API_BASE_URL } from "../utils/apiBase";
+import { useTranslation } from "react-i18next";
+
+export default function Astrologers() {
+
+const location = useLocation();
+const navigate = useNavigate();
+const { i18n } = useTranslation();
+
+const [open, setOpen] = useState(null);
+const [language, setLanguage] = useState("Language");
+const [exp, setExp] = useState("Experience");
+const [rating, setRating] = useState("Rating");
+const [type, setType] = useState("Consultation");
+const [reader, setReader] = useState("Reader");
+
+const [search, setSearch] = useState("");
+const [showMsg, setShowMsg] = useState("");
+const [activePage, setActivePage] = useState(1);
+const [searching, setSearching] = useState(false);
+const pageSize = 6;
+
+const handleClick = (message) => {
+  setShowMsg("");
+  setTimeout(() => setShowMsg(message), 50);
+  setTimeout(() => setShowMsg(""), 2500);
+};
+
+useEffect(() => {
+  if (location.state?.msg) {
+    setShowMsg(location.state.msg);
+    setTimeout(() => setShowMsg(""), 2000);
+  }
+}, [location]);
+
+useEffect(() => {
+  const params = new URLSearchParams(location.search);
+  const queryType = params.get("type");
+  const querySpecialty = params.get("specialty");
+  if (queryType === "call") {
+    setType("Call");
+  } else if (queryType === "chat") {
+    setType("Chat");
+  }
+  if (querySpecialty === "palm-reading") {
+    setReader("Palm Reading");
+  }
+}, [location.search]);
+
+const [astrologersList, setAstrologersList] = useState([]);
+const [loading, setLoading] = useState(true);
+
+useEffect(() => {
+  const timeoutId = window.setTimeout(async () => {
+    try {
+      setSearching(true);
+      const params = new URLSearchParams();
+      if (search.trim()) params.set("q", search.trim());
+      if (type === "Chat" || type === "Call") params.set("type", type.toLowerCase());
+      if (reader === "Palm Reading") params.set("specialty", "palm-reading");
+      params.set("la", i18n.language === "hi" ? "hi" : "en");
+      const response = await fetch(`${API_BASE_URL}/astrologers?${params.toString()}`);
+      const data = await response.json();
+      const list = data.astrologers || data.data?.data || data.data || [];
+      if (Array.isArray(list)) {
+        setAstrologersList(list);
+      }
+    } catch (error) {
+      console.error("Failed to fetch astrologers", error);
+    } finally {
+      setLoading(false);
+      setSearching(false);
+    }
+  }, 250);
+
+  return () => window.clearTimeout(timeoutId);
+}, [search, type, reader, i18n.language]);
+
+useEffect(() => {
+  setActivePage(1);
+}, [search, type, reader]);
+
+const featuredExpert = astrologersList.find(a => a.astrologer_detail?.is_featured) || astrologersList[0];
+const featuredDetails = featuredExpert?.astrologer_detail || {};
+const selectedConsultationType = type === "Call" ? "call" : "chat";
+const selectedServiceContext = reader === "Palm Reading" ? "palm-reading" : undefined;
+const totalPages = Math.max(1, Math.ceil(astrologersList.length / pageSize));
+const currentPage = Math.min(activePage, totalPages);
+const paginatedAstrologers = astrologersList.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+const formatRatingLabel = (details) => {
+  const ratingValue = details?.rating !== null && details?.rating !== undefined && details?.rating !== ""
+    ? Number(details.rating)
+    : null;
+  const totalReviews = Number(details?.total_reviews || 0);
+
+  if (!ratingValue || totalReviews === 0) {
+    return "Not Rated Yet";
+  }
+
+  return `${ratingValue.toFixed(1)} (${totalReviews} review${totalReviews === 1 ? "" : "s"})`;
+};
+
+const hasRealRating = (details) => {
+  const ratingValue = details?.rating !== null && details?.rating !== undefined && details?.rating !== ""
+    ? Number(details.rating)
+    : null;
+  const totalReviews = Number(details?.total_reviews || 0);
+
+  return Boolean(ratingValue) && totalReviews > 0;
+};
+
+const getImageUrl = (path) => {
+  if (!path) return avatar;
+  if (path.startsWith('http')) return path;
+  const baseUrl = import.meta.env.VITE_BACKEND_URL || 'https://astrozura.com';
+  return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+};
+
+const filters = [
+  { key: "lang", state: language, setter: setLanguage, options: ["Hindi", "English", "Marathi", "Tamil"] },
+  { key: "exp", state: exp, setter: setExp, options: ["1-5 Years", "5-10 Years", "10+ Years"] },
+  { key: "rating", state: rating, setter: setRating, options: ["4+ Stars", "4.5+ Stars", "5 Stars"] },
+  { key: "type", state: type, setter: setType, options: ["Chat", "Call"] },
+  { key: "reader", state: reader, setter: setReader, options: ["All Readers", "Palm Reading"] },
+];
+
+return (
+  <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#f8f9fa] font-sans">
+
+    {/* Notification Toast */}
+    {showMsg && (
+        <div className="fixed left-1/2 top-24 z-[70] -translate-x-1/2 rounded-xl bg-[#1E3557] px-6 py-3 text-sm font-medium text-white shadow-lg">
+        {showMsg}
+      </div>
+    )}
+
+    <Navbar />
+
+    <section className="max-w-7xl mx-auto px-4 md:px-8 py-12 flex-1 w-full">
+
+      {/* PAGE HEADER */}
+      <div className="mb-8">
+        <p className="text-[#D4A73C] font-medium text-sm tracking-wider uppercase mb-1">Our Experts</p>
+        <h1 className="text-3xl md:text-4xl font-bold text-[#1E3557]">
+          Consult With Expert Astrologers
+        </h1>
+        <p className="text-gray-500 mt-2 text-sm md:text-base">
+          Choose from experienced Vedic astrologers for personalized guidance.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center items-center py-20">
+           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#D4A73C]"></div>
+        </div>
+      ) : (
+      <>
+        {/* SEARCH + FILTER BAR */}
+        <div className="bg-white p-3 md:p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row gap-3 mb-10">
+          <input
+            placeholder="Search astrologer by name..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="border border-gray-200 px-4 py-3 rounded-xl flex-1 text-sm outline-none focus:border-[#D4A73C] focus:ring-2 focus:ring-[#D4A73C]/20 transition text-[#1E3557]"
+          />
+
+          {filters.map(({ key, state, setter, options }) => (
+            <div key={key} className="relative w-full md:w-44">
+              <button
+                onClick={() => setOpen(open === key ? null : key)}
+                className={`w-full border px-4 py-3 rounded-xl text-left flex justify-between items-center text-sm font-medium transition ${
+                  open === key
+                    ? "bg-[#1E3557] text-white border-[#1E3557]"
+                    : "bg-white text-gray-700 border-gray-200 hover:border-[#D4A73C]"
+                }`}
+              >
+                <span>{state}</span>
+                <svg className={`w-4 h-4 ml-2 transition-transform ${open === key ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {open === key && (
+                <div className="absolute bg-white border border-gray-100 w-full mt-1 rounded-xl shadow-lg z-10 overflow-hidden">
+                  {options.map(item => (
+                    <div
+                      key={item}
+                      onClick={() => { setter(item); setOpen(null); }}
+                      className="px-4 py-2.5 text-sm text-gray-700 hover:bg-[#1E3557] hover:text-white cursor-pointer transition"
+                    >
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* FEATURED EXPERT CARD */}
+        {featuredExpert && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden grid md:grid-cols-2 mb-8 sm:mb-12">
+          <div className="relative h-[180px] sm:h-[260px] md:h-full overflow-hidden shrink-0">
+            <img src={getImageUrl(featuredDetails.profile_image)} className="w-full h-full object-cover object-top bg-gray-50 transition-transform duration-500 hover:scale-105" alt={featuredExpert.name} />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent md:hidden" />
+          </div>
+
+          <div className="p-5 sm:p-8 md:p-10 flex flex-col justify-center">
+            <span className="inline-block text-[11px] sm:text-xs bg-[#FFF8ED] text-[#D4A73C] border border-[#F3E7D3] px-3 py-1 rounded-full font-bold tracking-wider uppercase w-fit mb-3">
+              Featured Expert
+            </span>
+            <p className="mb-1 text-[11px] sm:text-xs font-black uppercase tracking-[0.2em] text-[#D4A73C]">Align Your Stars. Engineer Your Destiny.</p>
+            <h2 className="text-xl sm:text-2xl md:text-3xl font-bold text-[#1E3557]">
+              {(featuredExpert.name || "").toLowerCase().includes("ananya")
+                ? "Meet Ananya Gupta (AstroTarsh)"
+                : featuredExpert.name}
+            </h2>
+            <p className="mt-2 text-gray-500 text-xs sm:text-sm leading-relaxed line-clamp-2 md:line-clamp-3">
+              {featuredDetails.about_bio || "Expert Vedic Astrologer providing guidance through life's most important decisions."}
+            </p>
+            <p className="mt-2 hidden sm:block text-xs sm:text-sm font-bold italic leading-relaxed text-[#1E3557]">
+              "Astrology is not just about predicting the future; it's about decoding the blueprint of your soul."
+            </p>
+
+            <div className="flex items-center gap-4 sm:gap-8 md:gap-10 mt-4 sm:mt-6 flex-wrap">
+              <div>
+                <p className="text-[10px] text-gray-400 font-bold tracking-widest uppercase">Experience</p>
+                <p className="font-bold text-[#1E3557] text-sm sm:text-base md:text-lg">{featuredDetails.experience_years || 0} Years</p>
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 font-bold tracking-widest uppercase">Rating</p>
+                <p className="font-bold text-[#1E3557] text-sm sm:text-base md:text-lg flex items-center gap-1.5">
+                  {hasRealRating(featuredDetails) ? (
+                    <>
+                      {Number(featuredDetails.rating).toFixed(1)} <FaStar className="text-[#D4A73C] text-sm" />
+                    </>
+                  ) : (
+                    <span className="text-xs sm:text-sm text-gray-500">Not Rated Yet</span>
+                  )}
+                </p>
+                {Number(featuredDetails.total_reviews || 0) > 0 && (
+                  <p className="mt-0.5 text-[10px] sm:text-xs text-gray-400">{featuredDetails.total_reviews} reviews</p>
+                )}
+              </div>
+              <div>
+                <p className="text-[10px] text-gray-400 font-bold tracking-widest uppercase">Sessions</p>
+                <p className="font-bold text-[#1E3557] text-sm sm:text-base md:text-lg">1,200+</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2.5 sm:gap-3 mt-5 sm:mt-8">
+              <Link to={`/profile/${featuredExpert.id}`} state={{ msg: "Viewing Profile..." }} onClick={() => handleClick("Viewing Profile...")} className="w-full sm:w-auto">
+                <button className="border-2 border-gray-100 text-[#1E3557] px-6 py-2.5 sm:px-8 sm:py-3.5 rounded-xl text-xs sm:text-sm font-black hover:bg-gray-50 hover:border-[#1E3557] transition-all w-full">
+                  View Profile
+                </button>
+              </Link>
+              <button
+                disabled={featuredExpert.availability_status === "unavailable"}
+                onClick={() => navigate(`/consultation/${featuredExpert.id}`, { state: { type: selectedConsultationType, astrologer: featuredExpert, serviceContext: selectedServiceContext } })}
+                className="bg-[#1E3557] text-white px-6 py-2.5 sm:px-8 sm:py-3.5 rounded-xl font-black text-xs sm:text-sm hover:bg-[#162744] hover:shadow-xl hover:-translate-y-1 transition-all w-full sm:w-auto disabled:cursor-not-allowed disabled:bg-red-600 disabled:hover:translate-y-0"
+              >
+                {featuredExpert.availability_status === "unavailable" ? "Unavailable" : "Book a Session"}
+              </button>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* ASTROLOGERS GRID */}
+        <div className="flex justify-between items-center mb-4 sm:mb-6">
+          <h2 className="text-lg sm:text-xl font-bold text-[#1E3557]">Top Rated Astrologers</h2>
+          <div className="text-right">
+            <p className="text-xs sm:text-sm text-gray-400 font-medium">{astrologersList.length} Astrologers</p>
+            {searching && <p className="text-xs text-[#D4A73C] font-medium mt-1">Searching...</p>}
+          </div>
+        </div>
+
+        <div className="grid min-w-0 grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3">
+          {paginatedAstrologers.map((astro) => {
+            const details = astro.astrologer_detail || {};
+            const unavailable = astro.availability_status === "unavailable";
+
+            return (
+              <div key={astro.id} className="flex min-w-0 max-w-full flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-3.5 transition duration-300 hover:-translate-y-1 hover:shadow-md sm:p-5">
+
+                <div className="mb-3 sm:mb-4 flex min-w-0 flex-wrap items-start gap-3">
+                  <img src={getImageUrl(details.profile_image)} className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover shadow-sm flex-shrink-0" alt={astro.name} />
+
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-bold text-[#1E3557] text-sm sm:text-base truncate">{astro.name}</h3>
+                    <p className="mt-0.5 break-words text-xs text-gray-500">{details.experience_years || 0} Exp | {details.languages || 'N/A'}</p>
+                    <span className="inline-block text-[10px] font-semibold text-[#D4A73C] bg-[#FFF8ED] border border-[#F3E7D3] px-2 py-0.5 rounded-md mt-1 truncate max-w-full">
+                      {details.specialities || 'Astrology'}
+                    </span>
+                    <div className="mt-1.5 sm:mt-2">
+                      <AstrologerStatusBadge status={astro.availability_status} />
+                    </div>
+                  </div>
+
+                  <div className={`max-w-full flex-shrink-0 rounded-lg px-2 py-1 sm:px-2.5 sm:py-1.5 text-[10px] sm:text-[11px] font-bold ${hasRealRating(details) ? "bg-[#1E3557] text-white" : "bg-gray-100 text-gray-500"}`}>
+                    {hasRealRating(details) ? (
+                      <span className="flex items-center gap-1">
+                        <FaStar className="text-[#D4A73C] text-xs" />
+                        {Number(details.rating).toFixed(1)}
+                      </span>
+                    ) : (
+                      "Not Rated Yet"
+                    )}
+                  </div>
+                </div>
+
+                <p className="mb-3 text-xs text-gray-400">{formatRatingLabel(details)}</p>
+
+                <div className="grid grid-cols-2 gap-2 sm:gap-3 mt-auto">
+                  <div className="bg-[#f8f9fa] p-2 sm:p-3 rounded-xl text-center border border-gray-100">
+                    <p className="text-[10px] text-gray-400 font-bold tracking-wider uppercase mb-0.5">Chat</p>
+                    <p className="font-bold text-[#1E3557] text-xs sm:text-sm">Rs {details.chat_price || 0}/min</p>
+                  </div>
+                  <div className="bg-[#f8f9fa] p-2 sm:p-3 rounded-xl text-center border border-gray-100">
+                    <p className="text-[10px] text-gray-400 font-bold tracking-wider uppercase mb-0.5">Call</p>
+                    <p className="font-bold text-[#1E3557] text-xs sm:text-sm">Rs {details.call_price || 0}/min</p>
+                  </div>
+                </div>
+
+                <div className="mt-3 sm:mt-4 grid grid-cols-2 gap-2 sm:gap-3">
+                  <Link to={`/profile/${astro.id}`} state={{ msg: "Viewing Profile..." }} onClick={() => handleClick("Viewing Profile...")} className="flex-1">
+                    <button className="w-full border border-gray-200 text-gray-700 px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold hover:border-[#1E3557] hover:text-[#1E3557] transition truncate">
+                      View Profile
+                    </button>
+                  </Link>
+                  <button
+                    disabled={unavailable}
+                    onClick={() => navigate(`/consultation/${astro.id}`, { state: { type: selectedConsultationType, astrologer: astro, serviceContext: selectedServiceContext } })}
+                    className="flex-1 bg-[#1E3557] text-white px-3 py-2 sm:px-4 sm:py-2.5 rounded-xl text-xs sm:text-sm font-bold hover:bg-[#162744] hover:shadow-md transition disabled:cursor-not-allowed disabled:bg-red-600 truncate"
+                  >
+                    {unavailable ? "Unavailable" : "Book Now"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {!astrologersList.length && (
+          <div className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-14 text-center mt-8">
+            <p className="text-lg font-bold text-[#1E3557]">
+              {reader === "Palm Reading" ? "No palm reading experts are available right now." : "No astrologers match this search."}
+            </p>
+            <p className="mt-2 text-sm text-gray-500">
+              {reader === "Palm Reading"
+                ? "Please check again soon, or choose a general astrologer for another consultation."
+                : "Try another name, speciality, or language."}
+            </p>
+          </div>
+        )}
+      </>
+      )}
+
+      {/* PAGINATION */}
+      {totalPages > 1 && (
+        <div className="flex justify-center mt-12 gap-2 flex-wrap">
+          <button
+            type="button"
+            disabled={currentPage === 1}
+            onClick={() => setActivePage((page) => Math.max(1, page - 1))}
+            className={`px-4 py-2 border rounded-xl text-sm transition ${
+              currentPage === 1
+                ? "border-gray-100 text-gray-300 cursor-not-allowed bg-gray-50"
+                : "border-gray-200 hover:bg-gray-50 text-gray-700"
+            }`}
+          >
+            Prev
+          </button>
+
+          {Array.from({ length: totalPages }, (_, index) => index + 1).map((num) => (
+            <button
+              key={num}
+              type="button"
+              onClick={() => setActivePage(num)}
+              className={`px-4 py-2 rounded-xl text-sm font-bold transition ${
+                currentPage === num
+                  ? "bg-[#1E3557] text-white shadow-md"
+                  : "border border-gray-200 text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              {num}
+            </button>
+          ))}
+
+          <button
+            type="button"
+            disabled={currentPage === totalPages}
+            onClick={() => setActivePage((page) => Math.min(totalPages, page + 1))}
+            className={`px-4 py-2 border rounded-xl text-sm transition ${
+              currentPage === totalPages
+                ? "border-gray-100 text-gray-300 cursor-not-allowed bg-gray-50"
+                : "border-gray-200 hover:bg-gray-50 text-gray-700"
+            }`}
+          >
+            Next
+          </button>
+        </div>
+      )}
+
+    </section>
+
+    <Footer />
+
+  </div>
+);
+}

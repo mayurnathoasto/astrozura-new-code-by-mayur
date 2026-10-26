@@ -1,0 +1,61 @@
+<?php
+
+namespace App\Services;
+
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Http;
+
+class AstrologyApiService
+{
+    public function json(string $path, array $payload = [], ?string $language = null): Response
+    {
+        return $this->request(
+            rtrim((string) config('astrologyapi.json_base_url'), '/') . '/' . ltrim($path, '/'),
+            $payload,
+            $language
+        );
+    }
+
+    public function pdf(string $path, array $payload = [], ?string $language = null): Response
+    {
+        return $this->request(
+            rtrim((string) config('astrologyapi.pdf_base_url'), '/') . '/' . ltrim($path, '/'),
+            $payload,
+            $language
+        );
+    }
+
+    public function pdfForm(string $path, array $payload = [], ?string $language = null): Response
+    {
+        return $this->request(
+            rtrim((string) config('astrologyapi.pdf_base_url'), '/') . '/' . ltrim($path, '/'),
+            $payload,
+            $language,
+            true
+        );
+    }
+
+    protected function request(string $url, array $payload, ?string $language, bool $asForm = false): Response
+    {
+        $userId = (string) config('astrologyapi.user_id');
+        $apiKey = (string) config('astrologyapi.api_key');
+
+        if ($userId === '' || $apiKey === '') {
+            throw new \RuntimeException('Astrology service credentials are not configured.');
+        }
+
+        $headers = [
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+            'Accept-Language' => $language ?: (string) config('astrologyapi.default_language', 'en'),
+        ];
+
+        $request = Http::withBasicAuth($userId, $apiKey)
+            ->withHeaders($headers)
+            ->timeout(30);
+
+        $request = $asForm ? $request->asForm() : $request->asJson();
+
+        return $request->post($url, $payload);
+    }
+}
